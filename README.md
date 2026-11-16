@@ -1,68 +1,115 @@
 # Open SEO Workbench
 
-A local-first, multi-site SEO data workbench. Search Console, Ahrefs, analytics platforms, rank trackers and CRM exports are **sources**, not the data model. The web UI, REST API and MCP server all call the same Python services.
+一个在本机运行的多站点 SEO 数据看板。把页面、搜索词、搜索表现、关键词需求和询盘关联起来，按页面找出值得优先处理的机会。可以只导入表格使用；GSC、Ahrefs 或其他平台的 API 都不是必需条件。
 
-## Start
+![Open SEO Workbench 看板示例](docs/images/dashboard.png)
 
-Requires Python 3.11+, Node.js and npm. On Windows, run `./start.ps1`; on macOS/Linux, run `./start.sh`. The launcher creates the Python environment on first use, builds the TypeScript frontend and opens `http://127.0.0.1:8766/`. Development mode: run `seo-workbench serve --no-browser` and `npm run dev` inside `frontend/` separately. REST documentation is at `/docs`.
+> 界面示例。看板数字取决于所选站点、月份、地区及数据来源。
 
-Data defaults to the user's application data directory (`%LOCALAPPDATA%\open-seo-workbench` on Windows, `$XDG_DATA_HOME/open-seo-workbench` on Linux). Set `SEO_PLATFORM_DATA_DIR` to choose another location. The launcher automatically uses local `data/` only if it already contains a registry database. `data/`, databases, exports, credentials and logs are Git ignored.
+## 安装与启动
 
-## Sites and data model
+需要 **Python 3.11 或更高版本**、**Node.js 和 npm**，以及 Git。首次启动会安装 Python 依赖、安装前端依赖并构建页面，因此需要联网；之后使用已有依赖即可。
 
-One registry lists sites. **Each site has its own SQLite database** with page and keyword IDs, URL aliases, data sources, import runs, page/search-query observations, keyword demand, inquiries, custom metric definitions, tasks and rule versions. Every API and MCP operation receives an explicit `site_id`.
+Windows PowerShell：
 
-An observation has a source, geography, period and grain. Search clicks and impressions belong to page observations; page × keyword average position belongs to query observations. Keyword volume is a supplier estimate with a snapshot month. `GLOBAL` means all countries *within that source*. The UI labels search geography and demand geography independently. Source preferences are configured per metric and geography. Different sources are never silently added together.
-
-Missing is `null`, distinct from an observed zero. With no inquiry source, a page's inquiry count is unknown and lead-dependent opportunities do not fire. With no demand source, ranking and CTR opportunities can still fire, while volume-gated product opportunities cannot. The opportunity response includes `missing_inputs`, source names, rule version and evidence.
-
-## Import files without an API key
-
-The UI accepts CSV, TSV, XLSX and JSON. The same normalized importer is available through REST, MCP and CLI. Choose a dataset, source name, geography and month; map source column names to the canonical fields when needed. The default `partial` coverage upserts rows; `complete` coverage replaces the same source, geography, grain and periods after parsing succeeds. Inquiry corrections upsert by source and external ID; complete inquiry imports replace the submitted months and require a submission date on every row. A repeated identical import is idempotent. Daily search rows roll up for month views when no explicit monthly row exists for that page or page × keyword.
-
-| Dataset | Required fields | Optional fields |
-| --- | --- | --- |
-| `search_page` | `page_url`, `period`, one metric | `clicks`, `impressions`, `position`, `page_type`, `language` |
-| `search_page_keyword` | `page_url`, `keyword`, `period`, one metric | `clicks`, `impressions`, `position` |
-| `keyword_demand` | `keyword`, `period` | `volume`, `difficulty`, `cpc` |
-| `inquiry` | an inquiry row | `external_id`, `submitted_on`, `landing_url`, `submit_url`, `quality`, `attribution` |
-| `custom_metric` | registered `metric_key`, entity URL or keyword, `period` | `value`, `value_text`, `entity_scope` |
-
-`period` may be omitted when supplying a default month/date during import. `page` and `query` columns are recognized as aliases for `page_url` and `keyword`. A GSC JSON response with `page` or `query,page` dimensions is accepted. Split multi-month GSC responses into separate monthly exports; assigning the aggregate to one month would misstate trends. The current calendar month shows observations but suppresses month-over-month trend and decline rules. `NORMAL` inquiries are page-linked records; they are not automatically attributed to organic search.
-
-Example CLI import:
-
-```text
-seo-workbench create-site "Example Store" example.com
-seo-workbench sites
-seo-workbench import SITE_ID search_page pages.csv --source "Search export" --geo US --period 2026-10
-seo-workbench import SITE_ID keyword_demand demand.csv --source "Volume export" --geo US --period 2026-11
+```powershell
+git clone https://github.com/ethanzhou22455663/open-seo-workbench.git
+cd open-seo-workbench
+.\start.ps1
 ```
 
-New metrics use `POST /api/sites/{site_id}/metrics`, then the `custom_metric` importer. Installed API connectors use the entry-point contract in [docs/ADAPTERS.md](docs/ADAPTERS.md); they feed the same importer. No provider credentials are stored in this repository.
+macOS / Linux：
 
-## Opportunities and filters
+```sh
+git clone https://github.com/ethanzhou22455663/open-seo-workbench.git
+cd open-seo-workbench
+sh ./start.sh
+```
 
-Eight evidence-gated combinations cover inquiry-page recovery, product ranking potential, purchasing-content decay, low CTR, second-page keywords, traffic without recorded inquiries, one query on multiple pages and zero-click product terms. The page table has three attention colors. Multi-tag filters use OR within a group and AND across groups. Page type patterns, purchase-intent terms, product-page informational-query exclusions, geography and numeric thresholds are site settings; rule changes create a version. Tags use only available data and display `unknown` where necessary. The opportunity table's inquiry count uses the configured lookback window; the summary card and page inquiry history use calendar months.
+启动后打开 [http://127.0.0.1:8766/](http://127.0.0.1:8766/)。需要查看或调用 REST 接口时，访问 [http://127.0.0.1:8766/docs](http://127.0.0.1:8766/docs)。服务默认只监听本机。
 
-## MCP
+## 五分钟建立第一个站点
 
-Local AI clients can start `seo-workbench mcp` over stdio. The server exposes site listing, page and query detail, opportunities, priority evidence, metric series, import status and optional provider adapters. Write tools support `dry_run` by default and record their actions. Every site-scoped tool requires `site_id`.
+1. 点击右上角 **「+ 站点」**，填写站点名称、主域名和时区。每个站点有独立数据库；右上角可切换站点。
+2. 打开 **「站点设置」**，填写页面路径分类规则。产品页、分类页、Blog 的判断会用到页面类型。还可以修改采购意图词、产品页排除的资讯词，以及标签和机会判断的数字门槛。
+3. 点击 **「导入数据」**，先导入同一月份的「页面搜索表现」和「词 × 页面搜索表现」。这两份数据就能显示每页点击、展示、可见关键词及各词在该页的平均排名。
+4. 如有关键词搜索量，导入「关键词搜索量」，并选对美国或全球地区；如有询盘记录，再导入「询盘」。缺少这些来源时，已有的搜索表现仍能查看。
+5. 在页面机会表选择月份、地区和页面类型，点击页面查看其关键词明细及询盘月度记录。
 
-Example client configuration after installation:
+### 准备导入文件
+
+支持 CSV、TSV、XLSX 和 JSON。CSV 建议使用 UTF-8 编码。导入时选择数据类型、来源名称、地区、时间粒度和覆盖方式；原表列名不一致时，在 **「列名映射 JSON」** 中指定对应关系。先点 **「预览列」** 核对，再导入。
+
+| 数据类型 | 至少需要的列 | 常用可选列 |
+| --- | --- | --- |
+| 页面搜索表现 `search_page` | `page_url`、`period`；`clicks`、`impressions`、`position` 中至少一项 | `page_type`、`language` |
+| 词 × 页面搜索表现 `search_page_keyword` | `page_url`、`keyword`、`period`；至少一项搜索指标 | `clicks`、`impressions`、`position` |
+| 关键词搜索量 `keyword_demand` | `keyword`、`period` | `volume`、`difficulty`、`cpc` |
+| 询盘 `inquiry` | 一条询盘记录 | `external_id`、`submitted_on`、`landing_url`、`submit_url`、`quality`、`attribution` |
+| 自定义指标 `custom_metric` | 已注册的 `metric_key`、实体 URL 或关键词、`period` | `value`、`value_text`、`entity_scope` |
+
+例如，页面搜索表现和页面关键词表现可以分别保存为：
+
+```csv
+page_url,period,clicks,impressions,position,page_type
+https://example.com/product/shower/,2026-10,12,600,8.4,product
+```
+
+```csv
+page_url,keyword,period,clicks,impressions,position
+https://example.com/product/shower/,shower supplier,2026-10,4,120,6.8
+```
+
+`period` 按月填写 `YYYY-MM`，按日填写 `YYYY-MM-DD`；也可以在导入界面提供默认月份。按日导入的搜索数据会在月度视图中汇总；同一页或同一页 × 词已有明确的月度记录时，以月度记录为准。`page` 和 `query` 可分别作为 `page_url` 和 `keyword` 的列名别名。含 `page` 或 `query,page` 维度的 GSC JSON 响应也可导入，但跨月响应必须先拆成逐月文件。
+
+询盘按 **落地页** 和 **提交页** 分别关联。仅 `quality=NORMAL` 的记录进入看板的 NORMAL 询盘统计；这代表记录质量标签，**不等于已证明来自自然搜索**。如需修正已导入询盘，请保留稳定的 `external_id` 再次导入。
+
+默认的 **「追加 / 更新」** 会更新同来源、同地区、同时间的数据；**「完整范围替换」** 会替换文件覆盖的时间范围。完全相同的文件重复导入不会重复计数。完整替换询盘时，每行必须提供 `submitted_on`。
+
+## 读懂看板
+
+- **顶部汇总**：所选月份的有搜索记录页面数、搜索点击、搜索展示和 NORMAL 落地询盘。展示指 Google 搜索结果展示，点击指搜索结果带来的点击。
+- **优先处理组合**：按数据条件筛出询盘页回升机会、产品页排名机会、采购内容衰退、低 CTR、第二页关键词等。点击组合可直接筛选页面。
+- **页面机会表**：每页一行，显示页面类型、主词、页面点击、主词展示、该词在该页的平均排名、搜索量及回看期询盘。红色表示优先处理，黄色表示进一步核查，灰色表示常规或证据不足。
+- **页面详情**：默认列出按点击和展示排序的前十个可见词，可翻页看全部词。每个词的点击、展示、CTR、平均排名和上月变化都只对应这个页面；同一个词落在不同页面时不会混成一个排名。
+- **多标签筛选**：同一标签组内满足任一项，跨组需同时满足。数字标准可在站点设置中修改。
+- **地区与来源**：搜索表现地区和搜索量地区分别选择。可指定来源并保存来源偏好；系统不会把不同平台的点击直接相加。
+
+Google Search Console 不会公开所有查询词。页面总点击与可见词点击的差额单独显示，不能反推出隐藏词。平均排名是所选时间段内的平均位置，不是某次搜索的固定名次。当月尚未结束时，系统仍显示现有数据，但暂停月环比趋势和下降类机会判断。缺失数据会显示为未知，不会被当作实际的零。
+
+## 数据放在哪里
+
+默认数据库位于用户应用数据目录：Windows 使用 `%LOCALAPPDATA%\open-seo-workbench`，macOS / Linux 使用 `$XDG_DATA_HOME/open-seo-workbench` 或用户目录下的 `.local/share/open-seo-workbench`。可通过环境变量 `SEO_PLATFORM_DATA_DIR` 指定私有数据目录。
+
+Windows 示例：
+
+```powershell
+$env:SEO_PLATFORM_DATA_DIR = 'D:\seo-data'
+.\start.ps1
+```
+
+站点数据库、上传文件、导出文件和密钥不应提交到 Git。仓库的 `.gitignore` 已排除常见本地数据文件。请不要把运行中的 SQLite 数据库放在网络共享目录上。
+
+## 让 AI 读取看板：MCP
+
+安装并启动过项目后，MCP 客户端可用以下命令通过 stdio 连接。`command` 请换成自己电脑上虚拟环境中 `seo-workbench` 可执行文件的**绝对路径**，并让 `SEO_PLATFORM_DATA_DIR` 指向看板使用的同一数据目录。
 
 ```json
-{"mcpServers":{"seo-workbench":{"command":"seo-workbench","args":["mcp"],"env":{"SEO_PLATFORM_DATA_DIR":"/path/to/private/data"}}}}
+{
+  "mcpServers": {
+    "seo-workbench": {
+      "command": "C:\\path\\open-seo-workbench\\.venv\\Scripts\\seo-workbench.exe",
+      "args": ["mcp"],
+      "env": {"SEO_PLATFORM_DATA_DIR": "D:\\seo-data"}
+    }
+  }
+}
 ```
 
-For local HTTP clients, run `seo-workbench mcp --transport streamable-http --port 8767` and connect to `http://127.0.0.1:8767/mcp`. The current launcher binds REST and MCP HTTP to loopback only; remote deployment needs authentication and is intentionally a separate configuration.
+macOS / Linux 的可执行文件位于 `.venv/bin/seo-workbench`。MCP 提供站点列表、页面与关键词详情、机会和依据、指标时间序列、导入状态等工具；站点操作都要求明确的 `site_id`。写入类工具默认先做 `dry_run`。本机 HTTP 客户端也可运行 `seo-workbench mcp --transport streamable-http --port 8767`，连接 `http://127.0.0.1:8767/mcp`。
 
-## Migrate the previous single-site database
+## 接入其他数据来源
 
-`seo-workbench migrate-legacy /path/to/old.sqlite3 --name "My Site" --domain example.com --timezone UTC` reads the old database in read-only mode and creates a new site database. It preserves page IDs, keyword IDs, monthly/daily search data, demand snapshots, inquiries, aliases and tasks, then checks row counts. The old database remains in place. Keep the migration target data directory outside a public Git repository or in ignored `data/`.
+直接导入表格不需要任何 API 密钥。需要自动更新时，可以按 [数据来源适配器说明](docs/ADAPTERS.md) 安装独立的 GSC、Ahrefs、分析平台或 CRM 适配器。适配器将数据转换为相同的页面、关键词、地区和时间记录；看板和 MCP 无需绑定某一家供应商。额外指标可先通过 REST API 注册，再导入 `custom_metric` 数据。
 
-## Development and publication
-
-`python -m unittest discover -s tests -v` runs data, API and MCP tests. `cd frontend && npm ci && npm run build` type-checks and builds the UI. Run `python scripts/check_public_repo.py` after `git add` and before pushing. The repository contains synthetic test domains only; real site databases, uploads, exports and credentials must stay outside Git.
-
-This is a local single-user application. SQLite WAL supports concurrent readers and a writer on one host; do not put its live database on a network share. Multi-user remote hosting would need an authenticated service and a deployment-specific database plan.
+开发者可运行 `python -m unittest discover -s tests -v` 检查后端，运行 `cd frontend && npm ci && npm run build` 检查前端。项目采用 [MIT License](LICENSE)。

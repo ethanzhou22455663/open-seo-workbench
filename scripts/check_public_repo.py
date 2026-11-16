@@ -1,6 +1,6 @@
-"""Fail closed on common client data and credential leaks in the Git index.
+"""Check staged source for raw data and credentials before publication.
 
-Run after `git add`, before a first push. This is a guard, not a guarantee.
+Run after `git add`, before pushing. This is a guard, not a guarantee.
 """
 
 import re
@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BLOCKED_PARTS = {"data", "raw", "exports", "uploads", "node_modules", ".venv", "__pycache__"}
 BLOCKED_SUFFIXES = {".sqlite", ".sqlite3", ".db", ".xlsx", ".xls", ".csv", ".tsv", ".pdf", ".pem", ".key", ".p12"}
+APPROVED_PUBLIC_MEDIA = {"docs/images/dashboard.png"}
 PATTERNS = {
     "client name": re.compile(rb"\x6c\x65\x65\x6c\x6f\x6e\x67\x73", re.I),
     "local user path": re.compile(rb"(?:[A-Z]:\x5cUsers\x5c|\x2fUsers\x2f)[^\s/\\]+", re.I),
@@ -31,9 +32,14 @@ def main():
         if BLOCKED_PARTS & set(path.parts) or path.suffix.lower() in BLOCKED_SUFFIXES:
             failures.append((name, "blocked data path or extension"))
             continue
-        blob = (ROOT / path).read_bytes()
+        blob = subprocess.run(["git", "show", f":{name}"], cwd=ROOT,
+                              capture_output=True, check=True).stdout
         if len(blob) > 2_000_000:
             failures.append((name, "file larger than 2 MB"))
+            continue
+        if name in APPROVED_PUBLIC_MEDIA:
+            if not blob.startswith(b"\x89PNG\r\n\x1a\n"):
+                failures.append((name, "approved media is not a PNG"))
             continue
         for label, pattern in PATTERNS.items():
             if pattern.search(blob):
@@ -42,7 +48,7 @@ def main():
         for name, reason in failures:
             print(f"BLOCKED: {name} ({reason})")
         return 1
-    print(f"Publication check passed: {len(names)} staged source files; no blocked client data detected.")
+    print(f"Publication check passed: {len(names)} staged files; approved public media: {len(APPROVED_PUBLIC_MEDIA & set(names))}.")
     return 0
 
 
