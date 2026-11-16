@@ -107,6 +107,40 @@ class CoreTests(unittest.TestCase):
             import_file(self.site["site_id"], payload, "gsc.json", dataset="search_page",
                         source_name="GSC", default_period="2026-10")
 
+    def test_daily_only_data_rolls_up_without_inventing_monthly_rows(self):
+        sid = self.site["site_id"]
+        page = "https://example.com/product/shower/"
+        import_records(sid, [
+            {"page_url":page,"period":"2026-10-01","clicks":2,"impressions":10,"position":4},
+            {"page_url":page,"period":"2026-10-02","clicks":3,"impressions":30,"position":8}],
+            dataset="search_page", source_name="Daily search", grain="day")
+        import_records(sid, [
+            {"page_url":page,"keyword":"shower supplier","period":"2026-10-01","clicks":1,"impressions":10,"position":4},
+            {"page_url":page,"keyword":"shower supplier","period":"2026-10-02","clicks":2,"impressions":30,"position":8}],
+            dataset="search_page_keyword", source_name="Daily search", grain="day")
+        overview = list_pages(sid)
+        self.assertEqual(overview["month"], "2026-10")
+        self.assertEqual(overview["summary"]["search_clicks"], 5)
+        pid = overview["pages"][0]["page_id"]
+        detail = page_detail(sid, pid)
+        self.assertEqual(detail["keywords"][0]["clicks"], 3)
+        self.assertEqual(detail["keywords"][0]["position"], 7)
+        self.assertEqual(metric_series(sid, "search_clicks", pid)["values"][0]["value"], 5)
+        self.assertEqual(metric_series(sid, "search_position", pid,
+                                       keyword_id=detail["keywords"][0]["keyword_id"])["values"][0]["value"], 7)
+        with site_db(sid) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM search_page_metrics WHERE grain='month'").fetchone()[0], 0)
+
+    def test_inquiry_corrections_do_not_double_count(self):
+        sid = self.site["site_id"]
+        row = {"external_id":"lead-7","submitted_on":"2026-10-05",
+               "landing_url":"https://example.com/product/shower/","quality":"SPAM"}
+        import_records(sid, [row], dataset="inquiry", source_name="CRM")
+        import_records(sid, [{**row, "quality":"NORMAL"}], dataset="inquiry", source_name="CRM")
+        with site_db(sid) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*),quality FROM inquiries").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT quality FROM inquiries").fetchone()[0], "NORMAL")
+
 
 if __name__ == "__main__":
     unittest.main()

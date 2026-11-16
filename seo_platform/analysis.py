@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .imports import normalize_geo
-from .services import _demand_source, _inquiry_source, _latest_month, _preferred_source, _query_source
+from .services import _demand_source, _inquiry_source, _latest_month, _page_metrics, _preferred_source, _query_metrics, _query_source
 from .storage import config_value, site_db, site_info
 
 PRESETS = (
@@ -99,22 +99,19 @@ def analyse(site_id, month=None, geo=None, demand_geo=None, search_source=None,
                                                 (" AND language=?" if language else ""), (language,) if language else ())]
         page_metrics = defaultdict(dict)
         if perf:
-            for row in db.execute("SELECT page_id,period,clicks,impressions,position FROM search_page_metrics WHERE source_id=? AND geo=? AND grain='month' AND period IN (?,?,?)",
-                                  (perf["source_id"], geo, month, prev, older)):
-                page_metrics[row["page_id"]][row["period"]] = dict(row)
+            for period in (month, prev, older):
+                for pid, row in _page_metrics(db, period, geo, perf).items():
+                    page_metrics[pid][period] = row
         words = defaultdict(list)
         prev_words = {}
         word_pages = defaultdict(set)
         if queries:
-            for row in db.execute("SELECT m.page_id,m.keyword_id,k.query,m.period,m.clicks,m.impressions,m.position FROM search_page_keyword_metrics m JOIN keywords k USING(keyword_id) WHERE m.source_id=? AND m.geo=? AND m.grain='month' AND m.period IN (?,?)",
-                                  (queries["source_id"], geo, month, prev)):
-                data = dict(row)
-                if row["period"] == month:
-                    words[row["page_id"]].append(data)
-                    if (row["impressions"] or 0) >= min_imp:
-                        word_pages[row["keyword_id"]].add(row["page_id"])
-                else:
-                    prev_words[(row["page_id"], row["keyword_id"])] = data
+            for row in _query_metrics(db, month, geo, queries):
+                words[row["page_id"]].append(row)
+                if (row["impressions"] or 0) >= min_imp:
+                    word_pages[row["keyword_id"]].add(row["page_id"])
+            prev_words = {(row["page_id"], row["keyword_id"]): row
+                          for row in _query_metrics(db, prev, geo, queries)}
         volumes = {}
         if demand:
             for row in db.execute("SELECT keyword_id,volume,snapshot_month FROM keyword_demand WHERE source_id=? AND geo=? ORDER BY snapshot_month DESC",

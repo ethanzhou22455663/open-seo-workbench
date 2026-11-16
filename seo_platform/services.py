@@ -133,9 +133,9 @@ def _preferred_source(db, dataset, geo, metric_key, requested=None):
 
 def _latest_month(db, geo, source_id=None):
     if source_id:
-        row = db.execute("SELECT MAX(period) FROM search_page_metrics WHERE geo=? AND grain='month' AND source_id=?", (geo, source_id)).fetchone()
+        row = db.execute("SELECT MAX(substr(period,1,7)) FROM search_page_metrics WHERE geo=? AND source_id=?", (geo, source_id)).fetchone()
     else:
-        row = db.execute("SELECT MAX(period) FROM (SELECT period FROM search_page_metrics WHERE geo=? AND grain='month' UNION ALL SELECT period FROM search_page_keyword_metrics WHERE geo=? AND grain='month')", (geo, geo)).fetchone()
+        row = db.execute("SELECT MAX(substr(period,1,7)) FROM (SELECT period FROM search_page_metrics WHERE geo=? UNION ALL SELECT period FROM search_page_keyword_metrics WHERE geo=?)", (geo, geo)).fetchone()
     return row[0] if row else None
 
 
@@ -151,11 +151,17 @@ def _inquiry_source(db, geo, requested=None):
     return _preferred_source(db, "inquiry", geo, "normal_inquiries", requested)
 
 
-def _page_metrics(db, month, geo, source):
+def _page_metrics(db, month, geo, source, page_id=None):
     if not source:
         return {}
-    return {row["page_id"]: dict(row) for row in db.execute("SELECT page_id,clicks,impressions,position FROM search_page_metrics WHERE period=? AND grain='month' AND geo=? AND source_id=?",
-                                                           (month, geo, source["source_id"]))}
+    page_filter = " AND page_id=?" if page_id is not None else ""
+    params = (month, geo, source["source_id"], *((page_id,) if page_id is not None else ()))
+    result = {row["page_id"]: dict(row) for row in db.execute("SELECT page_id,clicks,impressions,position FROM search_page_metrics WHERE period=? AND grain='month' AND geo=? AND source_id=?" + page_filter, params)}
+    for row in db.execute("""SELECT page_id,SUM(clicks) clicks,SUM(impressions) impressions,
+        COALESCE(SUM(CASE WHEN position IS NOT NULL THEN position*impressions END)/NULLIF(SUM(CASE WHEN position IS NOT NULL THEN impressions END),0),AVG(position)) position
+        FROM search_page_metrics WHERE substr(period,1,7)=? AND grain='day' AND geo=? AND source_id=?""" + page_filter + " GROUP BY page_id", params):
+        result.setdefault(row["page_id"], dict(row))
+    return result
 
 
 def _inquiry_counts(db, month, geo, source):
@@ -165,11 +171,25 @@ def _inquiry_counts(db, month, geo, source):
                                                                    (source["source_id"], geo, month))}
 
 
-def _keyword_rows(db, page_id, month, geo, source):
+def _query_metrics(db, month, geo, source, page_id=None):
     if not source:
         return []
-    return [dict(row) for row in db.execute("SELECT m.keyword_id,k.query,m.clicks,m.impressions,m.position FROM search_page_keyword_metrics m JOIN keywords k USING(keyword_id) WHERE m.page_id=? AND m.period=? AND m.grain='month' AND m.geo=? AND m.source_id=? ORDER BY COALESCE(m.clicks,0) DESC,COALESCE(m.impressions,0) DESC,k.keyword_id",
-                                           (page_id, month, geo, source["source_id"]))]
+    page_filter = " AND m.page_id=?" if page_id is not None else ""
+    params = (month, geo, source["source_id"], *((page_id,) if page_id is not None else ()))
+    monthly = { (row["page_id"],row["keyword_id"]): dict(row) for row in db.execute(
+        "SELECT m.page_id,m.keyword_id,k.query,m.clicks,m.impressions,m.position FROM search_page_keyword_metrics m JOIN keywords k USING(keyword_id) WHERE m.period=? AND m.grain='month' AND m.geo=? AND m.source_id=?" + page_filter, params)}
+    for row in db.execute("""SELECT m.page_id,m.keyword_id,k.query,SUM(m.clicks) clicks,SUM(m.impressions) impressions,
+        COALESCE(SUM(CASE WHEN m.position IS NOT NULL THEN m.position*m.impressions END)/NULLIF(SUM(CASE WHEN m.position IS NOT NULL THEN m.impressions END),0),AVG(m.position)) position
+        FROM search_page_keyword_metrics m JOIN keywords k USING(keyword_id)
+        WHERE substr(m.period,1,7)=? AND m.grain='day' AND m.geo=? AND m.source_id=?""" + page_filter +
+        " GROUP BY m.page_id,m.keyword_id", params):
+        monthly.setdefault((row["page_id"],row["keyword_id"]), dict(row))
+    return list(monthly.values())
+
+
+def _keyword_rows(db, page_id, month, geo, source):
+    return sorted(_query_metrics(db, month, geo, source, page_id),
+                  key=lambda row: (-(row["clicks"] or 0), -(row["impressions"] or 0), row["keyword_id"]))
 
 
 def _demand(db, keyword_id, geo, source):
@@ -243,11 +263,11 @@ def page_detail(site_id, page_id, month=None, geo=None, search_source=None, quer
         demand = _demand_source(db, demand_geo, demand_source)
         leads = _inquiry_source(db, geo, inquiry_source)
         month = month or _latest_month(db, geo, perf["source_id"] if perf else None)
-        current = _page_metrics(db, month, geo, perf).get(page_id) if month else None
+        current = _page_metrics(db, month, geo, perf, page_id).get(page_id) if month else None
         previous = None
         if month:
             previous_month = (date.fromisoformat(month + "-01") - timedelta(days=1)).strftime("%Y-%m")
-            previous = _page_metrics(db, previous_month, geo, perf).get(page_id)
+            previous = _page_metrics(db, previous_month, geo, perf, page_id).get(page_id)
         words = _keyword_rows(db, page_id, month, geo, queries) if month else []
         previous_words = {item["keyword_id"]: item for item in _keyword_rows(db, page_id, previous_month, geo, queries)} if month else {}
         for word in words:
@@ -285,13 +305,18 @@ def metric_series(site_id, metric_key, entity_id, geo=None, source_name=None, li
             if keyword_id is None:
                 raise ValueError("keyword_id is required for a page × keyword rank series")
             source = _query_source(db, geo, source_name)
-            rows = [dict(r) for r in db.execute("SELECT period,position value,impressions FROM search_page_keyword_metrics WHERE page_id=? AND keyword_id=? AND geo=? AND grain='month' AND source_id=? ORDER BY period DESC LIMIT ?",
-                                              (entity_id, keyword_id, geo, source["source_id"], limit))] if source else []
+            months = [r[0] for r in db.execute("SELECT DISTINCT substr(period,1,7) FROM search_page_keyword_metrics WHERE page_id=? AND keyword_id=? AND geo=? AND source_id=? ORDER BY 1 DESC LIMIT ?",
+                                             (entity_id, keyword_id, geo, source["source_id"], limit))] if source else []
+            rows = [{"period": month, "value": word["position"], "impressions": word["impressions"]}
+                    for month in months for word in _query_metrics(db, month, geo, source, entity_id)
+                    if word["keyword_id"] == keyword_id]
         elif metric_key in {"search_clicks", "search_impressions"}:
             source = _preferred_source(db, "search_page", geo, "search_clicks", source_name)
             field = {"search_clicks": "clicks", "search_impressions": "impressions"}[metric_key]
-            rows = [dict(r) for r in db.execute(f"SELECT period,{field} value FROM search_page_metrics WHERE page_id=? AND geo=? AND grain='month' AND source_id=? ORDER BY period DESC LIMIT ?",
-                                              (entity_id, geo, source["source_id"], limit))] if source else []
+            months = [r[0] for r in db.execute("SELECT DISTINCT substr(period,1,7) FROM search_page_metrics WHERE page_id=? AND geo=? AND source_id=? ORDER BY 1 DESC LIMIT ?",
+                                             (entity_id, geo, source["source_id"], limit))] if source else []
+            rows = [{"period": month, "value": metric[field]} for month in months
+                    if (metric := _page_metrics(db, month, geo, source, entity_id).get(entity_id))]
         elif metric_key == "keyword_volume":
             source = _demand_source(db, geo, source_name)
             rows = [dict(r) for r in db.execute("SELECT snapshot_month period,volume value FROM keyword_demand WHERE keyword_id=? AND geo=? AND source_id=? ORDER BY snapshot_month DESC LIMIT ?",

@@ -18,7 +18,7 @@ Missing is `null`, distinct from an observed zero. With no inquiry source, a pag
 
 ## Import files without an API key
 
-The UI accepts CSV, TSV, XLSX and JSON. The same normalized importer is available through REST, MCP and CLI. Choose a dataset, source name, geography and month; map source column names to the canonical fields when needed. The default `partial` coverage upserts rows; `complete` coverage replaces the same source, geography, grain and periods after parsing succeeds. A repeated identical import is idempotent.
+The UI accepts CSV, TSV, XLSX and JSON. The same normalized importer is available through REST, MCP and CLI. Choose a dataset, source name, geography and month; map source column names to the canonical fields when needed. The default `partial` coverage upserts rows; `complete` coverage replaces the same source, geography, grain and periods after parsing succeeds. Inquiry corrections upsert by source and external ID; complete inquiry imports replace the submitted months and require a submission date on every row. A repeated identical import is idempotent. Daily search rows roll up for month views when no explicit monthly row exists for that page or page × keyword.
 
 | Dataset | Required fields | Optional fields |
 | --- | --- | --- |

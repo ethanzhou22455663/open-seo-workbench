@@ -178,6 +178,8 @@ def import_records(site_id, rows, *, dataset, source_name, provider="file", geo=
                 raise ValueError(f"Row {index}: {exc}") from exc
         if not prepared:
             raise ValueError("No data rows to import")
+        if dataset == "inquiry" and coverage == "complete" and any(item[1] is None for item in prepared):
+            raise ValueError("Complete inquiry replacement requires submitted_on on every row")
         if dataset in {"search_page", "search_page_keyword"}:
             prepared = _combine_search_rows(prepared)
         fingerprint = fingerprint or hashlib.sha256(json.dumps({"dataset": dataset, "geo": geo, "grain": grain,
@@ -199,6 +201,10 @@ def import_records(site_id, rows, *, dataset, source_name, provider="file", geo=
             db.execute(f"DELETE FROM {table} WHERE source_id=? AND geo=? AND {field} IN ({marks})" +
                        (" AND grain=?" if dataset != "keyword_demand" else ""),
                        (source_id, geo, *periods, *((grain,) if dataset != "keyword_demand" else ())))
+        if coverage == "complete" and dataset == "inquiry" and periods:
+            marks = ",".join("?" for _ in periods)
+            db.execute(f"DELETE FROM inquiries WHERE source_id=? AND geo=? AND substr(submitted_on,1,7) IN ({marks})",
+                       (source_id, geo, *periods))
         inserted = 0
         for item in prepared:
             if dataset == "search_page":
@@ -215,7 +221,7 @@ def import_records(site_id, rows, *, dataset, source_name, provider="file", geo=
                            (kid, period, geo, source_id, *values, run_id))
             elif dataset == "inquiry":
                 external, submitted, landing, submit, landing_url, submit_url, quality, attribution = item
-                cursor = db.execute("INSERT OR IGNORE INTO inquiries(source_id,external_id,submitted_on,landing_page_id,submit_page_id,landing_url,submit_url,quality,attribution,geo,run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                cursor = db.execute("INSERT INTO inquiries(source_id,external_id,submitted_on,landing_page_id,submit_page_id,landing_url,submit_url,quality,attribution,geo,run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id,external_id) DO UPDATE SET submitted_on=excluded.submitted_on,landing_page_id=excluded.landing_page_id,submit_page_id=excluded.submit_page_id,landing_url=excluded.landing_url,submit_url=excluded.submit_url,quality=excluded.quality,attribution=excluded.attribution,geo=excluded.geo,run_id=excluded.run_id",
                                     (source_id, external, submitted, landing, submit, landing_url, submit_url, quality, attribution, geo, run_id))
                 inserted += cursor.rowcount
                 continue
